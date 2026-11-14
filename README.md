@@ -246,7 +246,35 @@ tenda-ctl tr069 --super
 
 The controller exposes 12 structured tools for autonomous AI agents via FastMCP.
 
-### Claude Desktop / Antigravity Configuration
+### Quick Setup for AI Agents (One-Shot Prompt)
+
+If you use an AI coding assistant (such as Google Antigravity, Claude Code, Cursor, Windsurf, or Cline), paste the following prompt directly into your AI chat to install and configure this MCP server automatically on your machine:
+
+> **Agent Installation Prompt**:
+> ```text
+> Please install and configure the Tenda HG7 Router Controller MCP server on this machine:
+> 
+> 1. Check if https://github.com/dulithdivisekara/slt-fiber-tenda-controller.git is already cloned; if not, clone it and enter the directory:
+>    git clone https://github.com/dulithdivisekara/slt-fiber-tenda-controller.git
+>    cd slt-fiber-tenda-controller
+> 
+> 2. Install the package in editable mode with dependencies:
+>    pip install -e .
+> 
+> 3. Register the MCP server named "tenda-hg7" in my agent/environment MCP configuration file (e.g., mcp.json, claude_desktop_config.json, or agent-specific MCP settings):
+>    - Command: python3 (or absolute path to current python virtual environment)
+>    - Args: ["-m", "tenda_controller.mcp_server"]
+>    - Environment variables:
+>      - TENDA_HOST: "192.168.1.1" (or router gateway IP)
+>      - TENDA_USERNAME: "admin"
+>      - TENDA_PASSWORD: "admin"
+>      - (Optional for advanced ISP diagnostics) TENDA_SUPER_USERNAME: "administrator", TENDA_SUPER_PASSWORD: "<your-super-admin-password>"
+> 
+> 4. Verify connectivity by invoking the tool `tenda_get_status` or running `tenda-ctl status`.
+> 5. Confirm when the MCP server is registered and print the router status, optical Rx power, and firmware version.
+> ```
+
+### Manual Configuration (Claude Desktop / Antigravity / Cursor)
 Add the server entry to your MCP configuration file (`mcp.json` or `claude_desktop_config.json`):
 
 ```json
