@@ -12,10 +12,10 @@ When an HTTP client authenticates against `/boaform/admin/formLogin`:
 
 ```mermaid
 graph TD
-    Client[HTTP Client] --> Login[/boaform/admin/formLogin]
+    Client[HTTP Client] --> Login["/boaform/admin/formLogin"]
     Login --> Verify{Credentials Match}
-    Verify -- admin / admin --> UserRole[Regular User Session]
-    Verify -- administrator / SUPER_ADMIN_PASSWORD --> SuperRole[Super Admin Session]
+    Verify -->|admin / admin| UserRole[Regular User Session]
+    Verify -->|administrator / SUPER_ADMIN_PASSWORD| SuperRole[Super Admin Session]
     UserRole --> UserNav[admin/userMenu.js: 8 Navigation Modules]
     SuperRole --> AdminNav[adminMenu.js: 10 Modules + Hidden Subsystems]
     AdminNav --> WAN[WAN Subsystem: multi_wan_generic.asp]
