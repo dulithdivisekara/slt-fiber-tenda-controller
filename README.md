@@ -79,6 +79,7 @@ sequenceDiagram
 ```
 .
 ├── assets/
+│   ├── screenshots/               # Sanitized terminal outputs (help, status, pon)
 │   └── tenda-logo.png             # Optimized official transparent logo
 ├── docs/
 │   ├── api-reference.md           # Python client methods and schemas
@@ -152,6 +153,10 @@ TENDA_SUPER_PASSWORD=your_super_admin_password_here
 
 The `tenda-ctl` utility provides 11 dedicated commands designed for SLT Fiber subscribers:
 
+<p align="center">
+  <img src="assets/screenshots/tenda-ctl-help.png" width="700" alt="tenda-ctl CLI Help Overview" />
+</p>
+
 | Command | Purpose | Access Tier | Practical Value for SLT Subscribers |
 | :--- | :--- | :--- | :--- |
 | `status` | System Telemetry | Normal (`admin`) | Check CPU/RAM load, firmware version, and uptime. |
@@ -171,6 +176,10 @@ The `tenda-ctl` utility provides 11 dedicated commands designed for SLT Fiber su
 tenda-ctl status
 ```
 
+<p align="center">
+  <img src="assets/screenshots/tenda-ctl-status.png" width="450" alt="tenda-ctl status terminal output" />
+</p>
+
 | Metric | Value |
 | :--- | :--- |
 | **Device Model** | HG7 |
@@ -188,6 +197,10 @@ Check your fiber link health directly from your terminal:
 ```bash
 tenda-ctl pon
 ```
+
+<p align="center">
+  <img src="assets/screenshots/tenda-ctl-pon.png" width="550" alt="tenda-ctl pon optical power telemetry output" />
+</p>
 
 | Telemetry Parameter | Measurement | Status / Compliance |
 | :--- | :--- | :--- |
@@ -312,6 +325,28 @@ Add the server entry to your MCP configuration file (`mcp.json` or `claude_deskt
 - `tenda_get_acl_rules()`: Inspect management service Access Control List exposure.
 - `tenda_get_tr069_config()`: Inspect TR-069 Auto-Configuration Server parameters.
 
+### Controlling the Router via AI Agents (Antigravity & Claude)
+
+FastMCP exposes the router controller over standard I/O (stdin/stdout) via JSON-RPC. Once registered, AI agents automatically discover the 12 tools and their parameter schemas.
+
+#### Sample Agent Prompts
+You can issue natural language commands directly to your AI assistant:
+- **Optical Laser Diagnostics**:
+  > *"Check my fiber optical power levels and confirm if the Rx dBm is within SLT's compliant range."*
+  > &rarr; Dispatches `tenda_get_optical_power()`
+- **Wi-Fi SSID & Password Management**:
+  > *"Update my 5GHz Wi-Fi SSID to 'Example-Fiber-5G' and set the password to 'SecurePass2026'."*
+  > &rarr; Dispatches `tenda_set_wifi_config(band="5g", ssid="Example-Fiber-5G", password="SecurePass2026")`
+- **Connected Device Inventory**:
+  > *"List all devices currently connected to my Wi-Fi and Ethernet ports."*
+  > &rarr; Dispatches `tenda_get_connected_devices()`
+- **Configuration Disaster Recovery**:
+  > *"Export a full router configuration backup to local storage."*
+  > &rarr; Dispatches `tenda_backup_config(destination_path="backup_config.xml")`
+- **Upstream Latency Test**:
+  > *"Ping 1.1.1.1 from the router to verify upstream connectivity."*
+  > &rarr; Dispatches `tenda_ping(target="1.1.1.1")`
+
 ## Session Logging & Inspection
 
 The client automatically manages session creation and teardown to prevent the router's 5-minute admin session lockout (`AUTO_LOGOUT_TIME=300`). 
@@ -376,6 +411,10 @@ The `tenda-controller` engine hardcodes strict write protections:
 
 This project is licensed under the [MIT License](LICENSE).
 
-```
-#SLTFiber #SriLankaTelecom #TendaHG7 #HomeNetworking #ModelContextProtocol #FastMCP #OpenSourceSriLanka
-```
+## Search Indexing & SLT Fiber Keywords
+
+This repository is optimized for Sri Lankan fiber broadband subscribers, network administrators, and home automation developers:
+- **Hardware & Firmware**: Tenda HG7 Dual-Band AC1200 GPON ONT, Realtek RTL960x SoC, Boa Web Server 0.95.15, firmware `v1.0.17`.
+- **ISP Network Profiles**: SLT-MOBITEL Fiber (Sri Lanka Telecom FTTH), VLAN 20 Internet PPPoE, VLAN 10 Voice SIP VoIP (`ftth.sltims.lk`), VLAN 30 PeoTV IPTV multicast.
+- **Diagnostics & Telemetry**: SLT optical power check (`tenda-ctl pon`), Class B+ laser attenuation limits (-8 dBm to -28 dBm), GPON ONU state `O5`.
+- **AI Automation**: Model Context Protocol (MCP), FastMCP server, Google Antigravity router control, Claude Desktop networking tools.
