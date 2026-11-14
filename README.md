@@ -45,7 +45,7 @@ This project delivers:
 The embedded web server dynamically binds client sessions to distinct JavaScript menus based on the authenticated credentials.
 
 | Feature / Subsystem | Standard Admin (`admin`) | Super Admin (`administrator`) | Technical Details |
-| :--- | :--- | :--- | :--- |
+| :---: | :---: | :---: | :---: |
 | **Active Interface Script** | `admin/userMenu.js` | `adminMenu.js` | Embedded Boa server binds menu script per IP session. |
 | **Top-Level Navigation** | 8 Modules | 10 Modules | Unlocks **WAN** (Sub 4) and **VoIP** (Sub 6). |
 | **Broadband WAN Profiles** | Hidden | Full Inspection | VLAN 20 Internet PPPoE, VLAN 10 Voice IPoE, VLAN 30 PeoTV. |
@@ -151,14 +151,14 @@ TENDA_SUPER_PASSWORD=your_super_admin_password_here
 
 ## Tool Catalog & Usage
 
-The `tenda-ctl` utility provides 11 dedicated commands designed for SLT Fiber subscribers:
+The `tenda-ctl` utility provides 7 core subscriber commands and 4 ISP Super Admin inspection commands:
 
 <p align="center">
   <img src="assets/screenshots/tenda-ctl-help.png" width="700" alt="tenda-ctl CLI Help Overview" />
 </p>
 
 | Command | Purpose | Access Tier | Practical Value for SLT Subscribers |
-| :--- | :--- | :--- | :--- |
+| :---: | :---: | :---: | :---: |
 | `status` | System Telemetry | Normal (`admin`) | Check CPU/RAM load, firmware version, and uptime. |
 | `pon` | Optical Power Levels | Normal (`admin`) | Verify fiber Rx/Tx optical power (dBm) and ONU registration (`O5`). |
 | `devices` | Connected Device Inventory | Normal (`admin`) | Monitor active LAN Ethernet and Wi-Fi DHCP clients. |
@@ -166,10 +166,9 @@ The `tenda-ctl` utility provides 11 dedicated commands designed for SLT Fiber su
 | `backup` | Disaster Recovery Backup | Normal (`admin`) | Export full router XML configuration before making any modifications. |
 | `ping` | Diagnostic Connectivity | Normal (`admin`) | Send ICMP ping upstream to test internet routing. |
 | `reboot` | Graceful Restart | Normal (`admin`) | Soft reboot router remotely without power cycling. |
-| `wan` | Multi-WAN Profiles | Super Admin | Inspect VLAN 20 (Internet), VLAN 10 (Voice), and VLAN 30 (PeoTV). |
-| `voip` | Landline SIP Telephony | Super Admin | Inspect SLT fixed-line VoIP phone registrar and codecs. |
-| `acl` | Access Control Lists | Super Admin | Audit remote management exposure on LAN and WAN interfaces. |
-| `tr069` | Remote CWMP Telemetry | Super Admin | Inspect SLT Auto-Configuration Server (ACS) connection status. |
+
+> [!NOTE]
+> The 4 advanced ISP commands (`wan`, `voip`, `acl`, `tr069`) require Super Admin credentials (`--super`) and are documented in the [Super Admin Guide](docs/super-admin-guide.md).
 
 ### System Telemetry & Hardware Status
 ```bash
@@ -177,20 +176,8 @@ tenda-ctl status
 ```
 
 <p align="center">
-  <img src="assets/screenshots/tenda-ctl-status.png" width="450" alt="tenda-ctl status terminal output" />
+  <img src="assets/screenshots/tenda-ctl-status.png" width="450" alt="tenda-ctl status terminal output displaying HG7 v2.0 hardware, v1.0.17 firmware, CPU, RAM, and uptime" />
 </p>
-
-| Metric | Value |
-| :--- | :--- |
-| **Device Model** | HG7 |
-| **Software Version** | v1.0.17 |
-| **Hardware Version** | v2.0 |
-| **System Uptime** | 20:14 |
-| **CPU Usage** | 3.0% |
-| **Memory Usage** | 27.0% |
-| **LAN IP Address** | [192.168.1.1](http://192.168.1.1) |
-| **LAN MAC Address** | `50:2B:73:00:00:00` |
-| **DNS Resolvers** | `222.165.171.2`, `222.165.171.1` |
 
 ### Optical Fiber Power (PON) Diagnostics
 Check your fiber link health directly from your terminal:
@@ -199,17 +186,10 @@ tenda-ctl pon
 ```
 
 <p align="center">
-  <img src="assets/screenshots/tenda-ctl-pon.png" width="550" alt="tenda-ctl pon optical power telemetry output" />
+  <img src="assets/screenshots/tenda-ctl-pon.png" width="550" alt="tenda-ctl pon optical power telemetry output displaying ONU state O5, Rx power -26.20 dBm, and Tx power 1.69 dBm" />
 </p>
 
-| Telemetry Parameter | Measurement | Status / Compliance |
-| :--- | :--- | :--- |
-| **ONU State** | `O5` | Operational / Synchronized |
-| **Rx Optical Power** | `-26.20 dBm` | Good (Class B+ compliant: -8 to -28 dBm) |
-| **Tx Optical Power** | `1.77 dBm` | Normal (0.5 to 5.0 dBm) |
-| **Laser Temperature** | `38.73 °C` | Normal |
-| **Internal Voltage** | `3.237 V` | Normal (3.3V bus) |
-| **Laser Bias Current** | `14.40 mA` | Normal |
+*Optical Compliance Standards: SLT Class B+ GPON requires Rx optical power between `-8.0 dBm` and `-28.0 dBm` with ONU State `O5` (Operational / Synchronized).*
 
 ### Connected Client Inventory
 ```bash
@@ -243,48 +223,24 @@ tenda-ctl ping 1.1.1.1
 
 ## Super Admin Inspection
 
-Authenticate with ISP Super Administrator credentials via `--super` or the `TENDA_SUPER_PASSWORD` environment variable to inspect low-level subsystems:
+Authenticate with ISP Super Administrator credentials via `--super` or the `TENDA_SUPER_PASSWORD` environment variable to inspect low-level fiber infrastructure subsystems:
 
-### 1. Broadband Multi-WAN Connection Profiles
 ```bash
+# Broadband multi-WAN interface profiles (VLAN 20 Internet, VLAN 10 Voice, VLAN 30 PeoTV)
 tenda-ctl wan --super
-```
 
-| Interface | VLAN ID | Type | Protocol | IP Address | Gateway | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `ppp0_nas0_0` | 20 | `INTERNET_TR069` | PPPoE | `100.64.0.1` | `100.64.0.254` | up |
-| `nas0_1` | 10 | `VOICE` | IPoE | `192.0.2.10` | `192.0.2.1` | up |
-| `nas0_2` | 30 | `Other` | Bridged | -- | -- | up |
-
-### 2. Landline VoIP Telephony Configuration
-```bash
+# Landline VoIP SIP telephony registrar and media configuration
 tenda-ctl voip --super
-```
 
-| SIP Parameter | Value |
-| :--- | :--- |
-| **Phone Number** | `+9411XXXXXXX` |
-| **Display Name** | `011XXXXXXX` |
-| **SIP Account Login ID** | `+9411XXXXXXXF0@sltims.lk` |
-| **SIP Proxy Server** | `ftth.sltims.lk:5060` |
-| **SIP Domain** | `sltims.lk` |
-| **Outbound Proxy** | `ftth.sltims.lk` |
-| **RTP Media Port** | `5000` |
-
-### 3. Management Access Control Lists (ACL)
-```bash
+# Remote management Access Control Lists (ACL rules on LAN and WAN)
 tenda-ctl acl --super
-```
 
-| Interface | State | Authorized IP Range | Exposed Services | Ports |
-| :--- | :--- | :--- | :--- | :--- |
-| **LAN** | Enable | All (Unrestricted) | ftp, web, https, snmp, ping | 21, 80, 443, 161, 162 |
-| **WAN** | Enable | `222.165.185.1 - 222.165.185.6` | web, ping | 80, ICMP |
-
-### 4. TR-069 Auto-Configuration Server (ACS) Telemetry
-```bash
+# TR-069 Auto-Configuration Server (ACS) CWMP telemetry
 tenda-ctl tr069 --super
 ```
+
+> [!TIP]
+> For complete technical breakdowns of WAN VLAN bindings, SIP domain configurations, ACL port maps, and TR-069 parameters, refer to the dedicated [Super Admin Technical Guide](docs/super-admin-guide.md).
 
 ## Model Context Protocol Server
 
@@ -378,9 +334,10 @@ test_get_acl_rules (test_super_admin_mock.TestSuperAdminMock.test_get_acl_rules)
 test_get_tr069_config (test_super_admin_mock.TestSuperAdminMock.test_get_tr069_config) ... ok
 test_get_voip_config (test_super_admin_mock.TestSuperAdminMock.test_get_voip_config) ... ok
 test_get_wan_profiles (test_super_admin_mock.TestSuperAdminMock.test_get_wan_profiles) ... ok
+test_mcp_super_admin_unconfigured_password_error (test_super_admin_mock.TestSuperAdminMock.test_mcp_super_admin_unconfigured_password_error) ... ok
 test_permission_denied_for_normal_admin (test_super_admin_mock.TestSuperAdminMock.test_permission_denied_for_normal_admin) ... ok
 
-Ran 13 tests in 0.007s
+Ran 14 tests in 0.012s
 OK
 ```
 

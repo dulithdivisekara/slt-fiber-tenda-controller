@@ -20,6 +20,7 @@ ENV/
 *.dat
 .env
 .env.*
+!.env.example
 secrets/
 cookies.json
 *.log
