@@ -16,25 +16,58 @@ from .client import TendaClient
 from .exceptions import TendaError
 
 console = Console(emoji=False)
+err_console = Console(stderr=True, emoji=False)
 
 
-def create_parser() -> argparse.ArgumentParser:
+def _build_common_parser(
+    include_password: bool = True,
+    suppress_defaults: bool = False,
+) -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--host", default=None, help="Router IP address (default: 192.168.1.1)")
-    common.add_argument("--username", "-u", default=None, help="Username (default: admin)")
-    common.add_argument("--password", "-p", default=None, help="Password (default: admin)")
-    common.add_argument("--timeout", "-t", type=float, default=10.0, help="HTTP timeout in seconds")
+    common.add_argument(
+        "--host",
+        default=argparse.SUPPRESS if suppress_defaults else None,
+        help="Router IP address (default: 192.168.1.1)",
+    )
+    common.add_argument(
+        "--username",
+        "-u",
+        default=argparse.SUPPRESS if suppress_defaults else None,
+        help="Username (default: admin)",
+    )
+    if include_password:
+        common.add_argument(
+            "--password",
+            "-p",
+            default=argparse.SUPPRESS if suppress_defaults else None,
+            help="Password (default: admin)",
+        )
+    common.add_argument(
+        "--timeout",
+        "-t",
+        type=float,
+        default=argparse.SUPPRESS if suppress_defaults else 10.0,
+        help="HTTP timeout in seconds",
+    )
     common.add_argument(
         "--super",
         action="store_true",
+        default=argparse.SUPPRESS if suppress_defaults else False,
         help="Authenticate using ISP Super Admin credentials (administrator)",
     )
+    return common
+
+
+def create_parser() -> argparse.ArgumentParser:
+    common_top = _build_common_parser(include_password=True, suppress_defaults=False)
+    common_sup = _build_common_parser(include_password=True, suppress_defaults=True)
+    common_no_pass_sup = _build_common_parser(include_password=False, suppress_defaults=True)
 
     parser = argparse.ArgumentParser(
         prog="tenda-ctl",
         usage="%(prog)s [OPTIONS] COMMAND [ARGS]...",
         description="Autonomous CLI & Management Tool for Tenda HG7 GPON ONT Router (SLT Fiber)",
-        parents=[common],
+        parents=[common_top],
     )
     parser.add_argument("--version", "-v", action="version", version="slt-fiber-tenda-controller 1.2.0")
 
@@ -45,39 +78,56 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # status
-    subparsers.add_parser("status", parents=[common], help="Display router hardware, firmware, and operating metrics")
+    subparsers.add_parser("status", parents=[common_sup], help="Display router hardware, firmware, and operating metrics")
 
     # pon
-    subparsers.add_parser("pon", parents=[common], help="Display optical GPON laser diagnostics and power levels")
+    subparsers.add_parser("pon", parents=[common_sup], help="Display optical GPON laser diagnostics and power levels")
 
     # devices
-    subparsers.add_parser("devices", parents=[common], help="List all active LAN and WLAN connected client devices")
+    subparsers.add_parser("devices", parents=[common_sup], help="List all active LAN and WLAN connected client devices")
 
     # wifi
-    wifi_parser = subparsers.add_parser("wifi", parents=[common], help="Inspect or modify Wi-Fi SSIDs and passphrases")
+    wifi_parser = subparsers.add_parser("wifi", parents=[common_sup], help="Inspect or modify Wi-Fi SSIDs and passphrases")
     wifi_sub = wifi_parser.add_subparsers(dest="wifi_action")
-    wifi_sub.add_parser("show", help="Display current 2.4GHz and 5GHz wireless settings")
-    wifi_set = wifi_sub.add_parser("set", help="Update Wi-Fi SSID or password")
+    wifi_sub.add_parser("show", parents=[common_sup], help="Display current 2.4GHz and 5GHz wireless settings")
+    wifi_set = wifi_sub.add_parser("set", parents=[common_no_pass_sup], help="Update Wi-Fi SSID or password")
     wifi_set.add_argument("--band", "-b", required=True, choices=["2.4g", "5g", "2.4ghz", "5ghz"], help="Wireless band")
     wifi_set.add_argument("--ssid", "-s", default=None, help="New wireless network name (SSID)")
-    wifi_set.add_argument("--password", "-w", default=None, help="New WPA2-PSK passphrase (8-63 chars)")
+    wifi_set.add_argument(
+        "--password", "--passphrase", "-w",
+        dest="wifi_password",
+        default=None,
+        help="New WPA2-PSK passphrase (8-63 chars)",
+    )
+    wifi_set.add_argument(
+        "--router-password",
+        dest="password",
+        default=argparse.SUPPRESS,
+        help="Router login password (overrides TENDA_PASSWORD)",
+    )
+    wifi_set.add_argument(
+        "--fallback-browser",
+        action="store_true",
+        default=False,
+        help="Use headless Chrome CDP fallback directly",
+    )
 
     # backup
-    backup_parser = subparsers.add_parser("backup", parents=[common], help="Export and download configuration backup (XML)")
+    backup_parser = subparsers.add_parser("backup", parents=[common_sup], help="Export and download configuration backup (XML)")
     backup_parser.add_argument("output", nargs="?", default="tenda_backup.xml", help="Destination file path")
 
     # ping
-    ping_parser = subparsers.add_parser("ping", parents=[common], help="Run a diagnostic ping from the router to an external host")
+    ping_parser = subparsers.add_parser("ping", parents=[common_sup], help="Run a diagnostic ping from the router to an external host")
     ping_parser.add_argument("target", help="IP address or domain to ping (e.g. 1.1.1.1 or google.com)")
 
     # reboot
-    subparsers.add_parser("reboot", parents=[common], help="Trigger a safe router restart")
+    subparsers.add_parser("reboot", parents=[common_sup], help="Trigger a safe router restart")
 
     # --- Super Admin Commands ---
-    subparsers.add_parser("wan", parents=[common], help="Display SLT broadband multi-WAN interface profiles and VLANs")
-    subparsers.add_parser("voip", parents=[common], help="Display SLT VoIP telephony and SIP registrar configuration (Super Admin)")
-    subparsers.add_parser("acl", parents=[common], help="Display management service Access Control List (ACL) rules (Super Admin)")
-    subparsers.add_parser("tr069", parents=[common], help="Display TR-069 Auto-Configuration Server (ACS) settings (Super Admin)")
+    subparsers.add_parser("wan", parents=[common_sup], help="Display SLT broadband multi-WAN interface profiles and VLANs")
+    subparsers.add_parser("voip", parents=[common_sup], help="Display SLT VoIP telephony and SIP registrar configuration (Super Admin)")
+    subparsers.add_parser("acl", parents=[common_sup], help="Display management service Access Control List (ACL) rules (Super Admin)")
+    subparsers.add_parser("tr069", parents=[common_sup], help="Display TR-069 Auto-Configuration Server (ACS) settings (Super Admin)")
 
     return parser
 
@@ -91,8 +141,8 @@ def main():
         sys.exit(0)
 
     # Credential negotiation
-    username = args.username
-    password = args.password
+    username = getattr(args, "username", None)
+    password = getattr(args, "password", None)
     if args.super or args.command in ("voip", "acl", "tr069"):
         if not username:
             username = os.getenv("TENDA_SUPER_USERNAME", "administrator")
@@ -103,10 +153,10 @@ def main():
                 import getpass
                 password = getpass.getpass("Enter ISP Super Admin password: ")
             else:
-                console.print(
+                err_console.print(
                     "[bold red]Error:[/bold red] Super Admin credentials required for this command.\n"
-                    "Provide via [cyan]--password <pass>[/cyan] or set the [cyan]TENDA_SUPER_PASSWORD[/cyan] environment variable.",
-                    file=sys.stderr,
+                    "Provide via [cyan]--password <pass>[/cyan] (or [cyan]--router-password <pass>[/cyan] for `wifi set`) "
+                    "or set the [cyan]TENDA_SUPER_PASSWORD[/cyan] environment variable."
                 )
                 sys.exit(1)
 
@@ -176,11 +226,16 @@ def main():
 
             elif args.command == "wifi":
                 if args.wifi_action == "set":
-                    client.set_wifi_config(band=args.band, ssid=args.ssid, password=args.password)
+                    client.set_wifi_config(
+                        band=args.band,
+                        ssid=args.ssid,
+                        password=args.wifi_password,
+                        force_browser_fallback=getattr(args, "fallback_browser", False),
+                    )
                     console.print(Panel(
                         f"[bold green]Successfully updated {args.band} Wi-Fi configuration![/bold green]\n"
                         f"SSID: {args.ssid or '[Unchanged]'}\n"
-                        f"Passphrase: {'[Updated]' if args.password else '[Unchanged]'}",
+                        f"Passphrase: {'[Updated]' if args.wifi_password else '[Unchanged]'}",
                         title="Wi-Fi Mutation Applied",
                     ))
                 else:
@@ -308,7 +363,7 @@ def main():
                 console.print(table)
 
     except TendaError as e:
-        console.print(f"[bold red]Router Error:[/bold red] {e}", file=sys.stderr)
+        err_console.print(f"[bold red]Router Error:[/bold red] {e}")
         sys.exit(1)
     except KeyboardInterrupt:
         console.print("\n[dim]Aborted by user.[/dim]")

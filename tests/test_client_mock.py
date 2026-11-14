@@ -2,10 +2,18 @@
 Mock integration tests for TendaClient parsing and validation.
 """
 
+import base64
 import unittest
+import urllib.parse
 from unittest.mock import MagicMock, patch
-from tenda_controller.client import TendaClient
-from tenda_controller.exceptions import TendaValidationError, TendaDangerousOperationError
+from tenda_controller.client import TendaClient, calculate_rtk_checksum
+from tenda_controller.exceptions import (
+    TendaAuthError,
+    TendaConnectionError,
+    TendaDangerousOperationError,
+    TendaError,
+    TendaValidationError,
+)
 
 
 SAMPLE_STATUS_HTML = """
@@ -113,6 +121,206 @@ class TestClientMock(unittest.TestCase):
         self.assertEqual(self.client._resolve_band_index("2.4GHz"), 1)
         with self.assertRaises(TendaValidationError):
             self.client._resolve_band_index("6g")
+
+    def test_login_rejects_login_page_html(self):
+        login_html = "<html><head><title>Login</title></head><script>top.location.href='/admin/login.asp'</script></html>"
+        post_resp = MagicMock(status_code=200, text=login_html)
+        with patch.object(self.client.session, "post", return_value=post_resp):
+            with self.assertRaises(TendaAuthError):
+                self.client.login()
+        self.assertFalse(self.client._is_logged_in)
+
+    def test_get_wifi_config_parses_default_chan_and_encryption(self):
+        basic_html = """
+        <script>defaultChan = 0;</script>
+        <input type="text" name="ssid" value="TestNet-2.4G">
+        """
+        wpa_html = """
+        <script>_encrypt[0] = 6; _wpaAuth[0] = 2;</script>
+        """
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=["", basic_html, "", wpa_html],
+        ):
+            cfg = self.client.get_wifi_config("2.4g")
+        self.assertEqual(cfg.ssid, "TestNet-2.4G")
+        self.assertIsNone(cfg.channel)
+        self.assertEqual(cfg.encryption, "WPA/WPA2-PSK (TKIP/AES)")
+
+        # Falls back to default encryption on TendaConnectionError fetching wlwpa.asp
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=["", basic_html, TendaConnectionError("timeout")],
+        ):
+            cfg_fallback = self.client.get_wifi_config("2.4g")
+        self.assertEqual(cfg_fallback.encryption, "WPA2-PSK (AES)")
+
+        # Never swallows TendaAuthError fetching wlwpa.asp
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=["", basic_html, TendaAuthError("expired")],
+        ):
+            with self.assertRaises(TendaAuthError):
+                self.client.get_wifi_config("2.4g")
+
+    def test_set_wifi_config_24g_payload(self):
+        pre_basic = """
+        <script>
+        defaultChan = 0;
+        document.wlanSetup.band.value = 11;
+        document.wlanSetup.chanwid.value = 3;
+        document.wlanSetup.ctlband.value = 0;
+        document.wlanSetup.txpower.selectedIndex = 0;
+        </script>
+        <input type="text" name="ssid" value="OldSSID">
+        """
+        pre_wpa = """
+        <script>
+        var band = 12;
+        _wlan_isNmode[0] = 0;
+        _wpaGroupRekeyTime[0] = '86400';
+        _uCipher[0] = 3;
+        _wpa2uCipher[0] = 3;
+        </script>
+        """
+        post_basic = """
+        <script>
+        defaultChan = 0;
+        document.wlanSetup.band.value = 10;
+        </script>
+        <input type="text" name="ssid" value="TestNet-2.4G">
+        """
+        post_wpa = "<script>_encrypt[0] = 6; _wpaAuth[0] = 2;</script>"
+
+        posted = []
+
+        def fake_post(url, data=None, headers=None, timeout=None):
+            posted.append((url, data))
+            return MagicMock(status_code=200, text="ok")
+
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=["", pre_basic, "", pre_wpa, "", "", post_basic, "", post_wpa],
+        ), patch.object(self.client.session, "post", side_effect=fake_post), patch(
+            "tenda_controller.client.time.sleep"
+        ):
+            ok = self.client.set_wifi_config("2.4g", ssid="TestNet-2.4G", password="MockPass@2026")
+
+        self.assertTrue(ok)
+        self.assertEqual(len(posted), 2)
+
+        setup_url, setup_body = posted[0]
+        self.assertTrue(setup_url.endswith("/boaform/formWlanSetup"))
+        setup_prefix, setup_csum_part = setup_body.rsplit("postSecurityFlag=", 1)
+        self.assertEqual(int(setup_csum_part), calculate_rtk_checksum(setup_prefix))
+        setup_kv = dict(urllib.parse.parse_qsl(setup_prefix, keep_blank_values=True))
+        self.assertEqual(setup_kv["band"], "10")
+        self.assertEqual(setup_kv["Band2G5GSupport"], "1")
+        self.assertEqual(setup_kv["basicrates"], "15")
+        self.assertEqual(setup_kv["operrates"], "4095")
+        self.assertEqual(setup_kv["submit-url"], "/admin/wlbasic.asp")
+        self.assertNotIn("wlanDisabled", setup_kv)
+        self.assertNotIn("ctlband", setup_kv)
+
+        enc_url, enc_body = posted[1]
+        self.assertTrue(enc_url.endswith("/boaform/admin/formWlEncrypt"))
+        enc_prefix, enc_csum_part = enc_body.rsplit("postSecurityFlag=", 1)
+        self.assertEqual(int(enc_csum_part), calculate_rtk_checksum(enc_prefix))
+        enc_kv = dict(urllib.parse.parse_qsl(enc_prefix, keep_blank_values=True))
+        self.assertEqual(enc_kv["security_method"], "6")
+        self.assertEqual(enc_kv["wpaAuth"], "psk")
+        self.assertEqual(enc_kv["wpaSSID"], "0")
+        self.assertEqual(enc_kv["pskFormat"], "0")
+        self.assertEqual(enc_kv["pskValue"], base64.b64encode(b"MockPass@2026").decode("ascii"))
+        self.assertEqual(enc_kv["submit-url"], "/admin/wlwpa.asp")
+
+    def test_set_wifi_config_5g_payload(self):
+        pre_basic = """
+        <script>
+        defaultChan = 0;
+        document.wlanSetup.band.value = 75;
+        document.wlanSetup.chanwid.value = 4;
+        document.wlanSetup.txpower.selectedIndex = 0;
+        </script>
+        <input type="text" name="ssid" value="SLT-Fiber-5G_0000">
+        """
+        post_basic = """
+        <script>defaultChan = 0; document.wlanSetup.band.value = 75;</script>
+        <input type="text" name="ssid" value="TestNet-5G">
+        """
+        posted = []
+
+        def fake_post(url, data=None, headers=None, timeout=None):
+            posted.append((url, data))
+            return MagicMock(status_code=200, text="ok")
+
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=["", pre_basic, "", post_basic],
+        ), patch.object(self.client.session, "post", side_effect=fake_post), patch(
+            "tenda_controller.client.time.sleep"
+        ):
+            ok = self.client.set_wifi_config("5g", ssid="TestNet-5G")
+
+        self.assertTrue(ok)
+        setup_kv = dict(urllib.parse.parse_qsl(posted[0][1], keep_blank_values=True))
+        self.assertEqual(setup_kv["band"], "75")
+        self.assertEqual(setup_kv["Band2G5GSupport"], "2")
+        self.assertEqual(setup_kv["wlan_idx"], "0")
+
+    def test_set_wifi_config_fallback_on_verification_failure(self):
+        pre_basic = '<script>defaultChan = 0; document.wlanSetup.band.value = 10;</script><input name="ssid" value="Old">'
+        stale_basic = '<script>defaultChan = 0; document.wlanSetup.band.value = 10;</script><input name="ssid" value="Old">'
+        updated_basic = '<script>defaultChan = 0; document.wlanSetup.band.value = 10;</script><input name="ssid" value="TestNet-2.4G">'
+        call_order = []
+
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=["", pre_basic, "", stale_basic, "", updated_basic],
+        ), patch.object(self.client.session, "post", return_value=MagicMock(status_code=200)), patch.object(
+            self.client, "logout", side_effect=lambda: call_order.append("logout") or True
+        ), patch.object(
+            self.client, "login", side_effect=lambda: call_order.append("login") or True
+        ), patch(
+            "tenda_controller.browser_fallback.apply_wifi_via_chrome",
+            side_effect=lambda **kw: call_order.append("chrome") or True,
+        ), patch("tenda_controller.client.time.sleep"):
+            ok = self.client.set_wifi_config("2.4g", ssid="TestNet-2.4G")
+
+        self.assertTrue(ok)
+        self.assertEqual(call_order, ["logout", "chrome", "login"])
+
+    def test_set_wifi_config_no_fallback_raises(self):
+        pre_basic = "<script>defaultChan = 0; document.wlanSetup.band.value = 10;</script><input name='ssid' value='Old'>"
+        stale_basic = "<script>defaultChan = 0; document.wlanSetup.band.value = 10;</script><input name='ssid' value='Old'>"
+
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=["", pre_basic, "", stale_basic],
+        ), patch.object(self.client.session, "post", return_value=MagicMock(status_code=200)), patch(
+            "tenda_controller.client.time.sleep"
+        ):
+            with self.assertRaises(TendaError):
+                self.client.set_wifi_config(
+                    "2.4g", ssid="TestNet-2.4G", use_browser_fallback=False
+                )
+
+    def test_set_wifi_config_auth_error_skips_fallback(self):
+        with patch.object(
+            self.client,
+            "_get_page",
+            side_effect=TendaAuthError("bad creds"),
+        ), patch("tenda_controller.browser_fallback.apply_wifi_via_chrome") as mock_chrome:
+            with self.assertRaises(TendaAuthError):
+                self.client.set_wifi_config("2.4g", ssid="TestNet-2.4G")
+        mock_chrome.assert_not_called()
 
 
 if __name__ == "__main__":

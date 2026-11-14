@@ -87,6 +87,7 @@ sequenceDiagram
 │   └── super-admin-guide.md       # Technical guide to Super Admin subsystems
 ├── tenda_controller/
 │   ├── __init__.py                # Package exports and version metadata
+│   ├── browser_fallback.py        # Headless Chrome CDP fallback for Wi-Fi mutations
 │   ├── client.py                  # HTTP client, checksum, and session engine
 │   ├── cli.py                     # Rich command-line interface (tenda-ctl)
 │   ├── exceptions.py              # Domain error types and safety guardrails
@@ -94,7 +95,9 @@ sequenceDiagram
 │   └── models.py                  # Pydantic schemas for router telemetry
 ├── tests/
 │   ├── __init__.py
+│   ├── test_browser_fallback.py   # Mock unit tests for Chrome CDP fallback
 │   ├── test_checksum.py           # Verification of Realtek checksum vectors
+│   ├── test_cli.py                # Unit tests for CLI subparser & error routing
 │   ├── test_client_mock.py        # Mock unit tests for basic client parsers
 │   └── test_super_admin_mock.py   # Mock unit tests for Super Admin parsers
 ├── .env.example                   # Environment configuration template
@@ -133,6 +136,9 @@ pip install -e .
 
 # Or user-mode install on modern Linux:
 pip install --break-system-packages --user -e .
+
+# Optional: include headless Chrome CDP fallback support for Wi-Fi mutations:
+pip install -e ".[browser]"
 ```
 
 ### Method 3: Environment Configuration
@@ -209,6 +215,9 @@ tenda-ctl wifi set --band 5g --ssid "SLT-Fiber-5G" --password "YourStrongPasswor
 
 # Update 2.4GHz SSID
 tenda-ctl wifi set --band 2.4g --ssid "SLT-Fiber-2.4G"
+
+# Force headless Chrome CDP fallback if firmware rejects direct HTTP forms
+tenda-ctl wifi set --band 5g --ssid "SLT-Fiber-5G" --fallback-browser
 ```
 
 ### Configuration Backup & Export
@@ -343,31 +352,12 @@ The client automatically manages session creation and teardown to prevent the ro
 
 ## Verification Tests
 
-Run the automated test suite verifying checksum calculation, parser robustness, and Super Admin mock fixtures:
+Run the automated test suite verifying checksum calculation, parser robustness, CLI subparsers, browser fallback, and Super Admin mock fixtures:
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Expected output:
-```text
-test_backup_checksum (test_checksum.TestChecksum.test_backup_checksum) ... ok
-test_login_checksum (test_checksum.TestChecksum.test_login_checksum) ... ok
-test_rtk_urlencode (test_checksum.TestChecksum.test_rtk_urlencode) ... ok
-test_band_resolution (test_client_mock.TestClientMock.test_band_resolution) ... ok
-test_connected_devices_null_ip_handling (test_client_mock.TestClientMock.test_connected_devices_null_ip_handling) ... ok
-test_get_pon_status_parsing (test_client_mock.TestClientMock.test_get_pon_status_parsing) ... ok
-test_get_status_parsing (test_client_mock.TestClientMock.test_get_status_parsing) ... ok
-test_wifi_password_validation (test_client_mock.TestClientMock.test_wifi_password_validation) ... ok
-test_get_acl_rules (test_super_admin_mock.TestSuperAdminMock.test_get_acl_rules) ... ok
-test_get_tr069_config (test_super_admin_mock.TestSuperAdminMock.test_get_tr069_config) ... ok
-test_get_voip_config (test_super_admin_mock.TestSuperAdminMock.test_get_voip_config) ... ok
-test_get_wan_profiles (test_super_admin_mock.TestSuperAdminMock.test_get_wan_profiles) ... ok
-test_mcp_super_admin_unconfigured_password_error (test_super_admin_mock.TestSuperAdminMock.test_mcp_super_admin_unconfigured_password_error) ... ok
-test_permission_denied_for_normal_admin (test_super_admin_mock.TestSuperAdminMock.test_permission_denied_for_normal_admin) ... ok
-
-Ran 14 tests in 0.012s
-OK
-```
+Expected summary: `Ran 28 tests ... OK` (covers `test_browser_fallback`, `test_checksum`, `test_cli`, `test_client_mock`, and `test_super_admin_mock`).
 
 ## Security & ISP Safety Boundaries
 

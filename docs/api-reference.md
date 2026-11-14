@@ -54,8 +54,8 @@ Returns active devices with:
 #### `get_wifi_config(band: str) -> WifiConfig`
 Accepts `"2.4g"` or `"5g"`. Returns `WifiConfig`.
 
-#### `set_wifi_config(band: str, ssid: Optional[str] = None, password: Optional[str] = None) -> bool`
-Safely updates SSID and/or password. Base64 encodes passwords automatically. Rejects quotes and backslashes.
+#### `set_wifi_config(band: str, ssid: Optional[str] = None, password: Optional[str] = None, use_browser_fallback: bool = True, force_browser_fallback: bool = False) -> bool`
+Safely updates SSID and/or password with read-back verification (`wlbasic.asp` / `wlwpa.asp`) and optional headless Chrome CDP fallback. Base64 encodes passwords automatically. Rejects quotes, backslashes, and spaces.
 
 #### `backup_config(destination_path: Union[str, Path]) -> Path`
 Exports the complete pristine XML configuration backup. Enforces safety checks to block factory reset.

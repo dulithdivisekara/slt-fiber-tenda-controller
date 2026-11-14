@@ -6,10 +6,11 @@ Author: Dulith Divisekara
 
 import os
 import re
+import time
 import base64
 import urllib.parse
 from pathlib import Path
-from typing import Optional, List, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -88,6 +89,62 @@ def rtk_urlencode(val: str) -> str:
     return encoded
 
 
+def _is_login_page(html: str) -> bool:
+    """Returns True if an HTML response is the router's login prompt/redirect."""
+    lower = html.lower()
+    return (
+        "/admin/login.asp" in lower
+        or "<title>login</title>" in lower
+        or "/boaform/admin/formlogin" in lower
+    )
+
+
+def _compute_wlan_rates(band_val: int) -> Tuple[int, int]:
+    """Computes basicrates and operrates bitmasks matching wlbasic.asp saveChanges()."""
+    b = band_val + 1
+    basic_rate = 0
+    oper_rate = 0
+    if b & 1:
+        basic_rate |= 0xF
+        oper_rate |= 0xF
+    if (b & 2) or (b & 4):
+        oper_rate |= 0xFF0
+        if not (b & 1):
+            basic_rate = 0x1F0
+    if b & 8:
+        if not (b & 3):
+            oper_rate |= 0xFFF
+        if b & 1:
+            basic_rate = 0xF
+        elif b & 2:
+            basic_rate = 0x1F0
+        else:
+            basic_rate = 0xF
+    oper_rate |= basic_rate
+    return basic_rate, oper_rate
+
+
+def _build_rtk_post_body(params: List[Tuple[str, str]]) -> str:
+    """Serializes ordered form fields and appends the Boa postSecurityFlag checksum."""
+    query_str = "".join(f"{rtk_urlencode(k)}={rtk_urlencode(v)}&" for k, v in params)
+    csum = calculate_rtk_checksum(query_str)
+    return f"{query_str}postSecurityFlag={csum}"
+
+
+_VALID_BANDS: Dict[int, Tuple[str, ...]] = {
+    0: ("3", "7", "11", "63", "71", "75"),
+    1: ("0", "1", "2", "7", "9", "10"),
+}
+_DEFAULT_BAND: Dict[int, str] = {0: "75", 1: "10"}
+_ENCRYPT_MAP: Dict[int, str] = {
+    0: "NONE",
+    1: "WEP",
+    2: "WPA-PSK",
+    4: "WPA2-PSK (AES)",
+    6: "WPA/WPA2-PSK (TKIP/AES)",
+}
+
+
 class TendaClient:
     """
     Client for interacting with the Tenda HG7 GPON ONT router web interface.
@@ -126,6 +183,7 @@ class TendaClient:
         Authenticates against /boaform/admin/formLogin.
         Automatically detects whether session has 'admin' or 'administrator' privileges.
         """
+        self._is_logged_in = False
         params = [
             ("username", self.username),
             ("password", self.password),
@@ -134,13 +192,7 @@ class TendaClient:
             ("save", "Login"),
             ("submit-url", "/admin/login.asp"),
         ]
-
-        query_str = ""
-        for k, v in params:
-            query_str += f"{rtk_urlencode(k)}={rtk_urlencode(v)}&"
-
-        csum = calculate_rtk_checksum(query_str)
-        post_body = f"{query_str}postSecurityFlag={csum}"
+        post_body = _build_rtk_post_body(params)
 
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
@@ -155,21 +207,22 @@ class TendaClient:
                 timeout=self.timeout,
                 allow_redirects=False,
             )
-            # Boa returns 301/302 to / on successful authentication
-            if resp.status_code in (200, 301, 302):
-                self._is_logged_in = True
-                # Role detection: check root HTML or username
-                try:
-                    root_html = self._get_page("/")
-                    if "adminMenu.js" in root_html:
-                        self.role = "administrator"
-                    else:
-                        self.role = "administrator" if self.username.lower() in ("administrator", "superadmin") else "admin"
-                except Exception:
-                    self.role = "administrator" if self.username.lower() in ("administrator", "superadmin") else "admin"
+            if resp.status_code not in (200, 301, 302) or (
+                resp.status_code == 200 and _is_login_page(resp.text)
+            ):
+                raise TendaAuthError(f"Login failed with HTTP {resp.status_code}")
 
-                return True
-            raise TendaAuthError(f"Login failed with HTTP {resp.status_code}")
+            root_html = self._get_page("/")
+            if _is_login_page(root_html):
+                raise TendaAuthError("Login rejected: router returned login page.")
+
+            self._is_logged_in = True
+            self.role = (
+                "administrator"
+                if ("adminMenu.js" in root_html or self.username.lower() in ("administrator", "superadmin"))
+                else "admin"
+            )
+            return True
         except requests.RequestException as e:
             raise TendaConnectionError(f"Failed to connect to router at {self.host}: {e}") from e
 
@@ -180,16 +233,10 @@ class TendaClient:
         if not self._is_logged_in:
             return True
 
-        params = [
+        post_body = _build_rtk_post_body([
             ("save", "Logout"),
             ("submit-url", "/login.asp"),
-        ]
-        query_str = ""
-        for k, v in params:
-            query_str += f"{rtk_urlencode(k)}={rtk_urlencode(v)}&"
-
-        csum = calculate_rtk_checksum(query_str)
-        post_body = f"{query_str}postSecurityFlag={csum}"
+        ])
 
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
@@ -216,8 +263,15 @@ class TendaClient:
             resp = self.session.get(url, timeout=self.timeout)
             if resp.status_code != 200:
                 raise TendaConnectionError(f"HTTP {resp.status_code} fetching {url}")
+            if _is_login_page(resp.text) and "login.asp" not in path.lower():
+                raise TendaAuthError("Router session expired or unauthenticated.")
             return resp.text
         except requests.RequestException as e:
+            msg = str(e)
+            if "BadStatusLine" in msg or "RemoteDisconnected" in msg:
+                raise TendaAuthError(
+                    f"Router rejected unauthenticated/locked session at {url}: {e}"
+                ) from e
             raise TendaConnectionError(f"Connection error requesting {url}: {e}") from e
 
     def get_status(self) -> DeviceStatus:
@@ -342,6 +396,89 @@ class TendaClient:
 
         raise TendaValidationError(f"Unrecognized band '{band}'. Specify '2.4g' or '5g'.")
 
+    def _parse_wlbasic_state(self, html: str, idx: int) -> Dict[str, Any]:
+        """Extracts radio and SSID form state from wlbasic.asp."""
+        ssid_m = re.search(r'<input[^>]*name="?ssid"?[^>]*value="([^"]*)"', html, re.I)
+        disabled = bool(re.search(r'<input[^>]*name="?wlanDisabled"?[^>]*checked', html, re.I))
+        band_m = (
+            re.search(r"document\.wlanSetup\.band\.value\s*=\s*(\d+)", html)
+            or re.search(r"var\s+defaultBand\s*=\s*(\d+)", html)
+        )
+        band_raw = band_m.group(1) if band_m else ""
+        band = band_raw if band_raw in _VALID_BANDS[idx] else _DEFAULT_BAND[idx]
+
+        chanwid_m = re.search(r"document\.wlanSetup\.chanwid\.value\s*=\s*(\d+)", html)
+        chanwid = chanwid_m.group(1) if chanwid_m else ("3" if idx == 1 else "4")
+
+        ctlband_m = re.search(r"document\.wlanSetup\.ctlband\.value\s*=\s*(\d+)", html)
+        ctlband = ctlband_m.group(1) if ctlband_m else "0"
+
+        chan_m = re.search(r"(?:defaultChan|wlan_channel)\s*=\s*(\d+)", html)
+        chan = chan_m.group(1) if chan_m else "0"
+
+        txpower_m = re.search(r"document\.wlanSetup\.txpower\.selectedIndex\s*=\s*(\d+)", html)
+        txpower = txpower_m.group(1) if txpower_m else "0"
+
+        return {
+            "ssid": ssid_m.group(1) if ssid_m else "",
+            "disabled": disabled,
+            "band_raw": band_raw,
+            "band": band,
+            "chanwid": chanwid,
+            "ctlband": ctlband,
+            "chan": chan,
+            "txpower": txpower,
+        }
+
+    def _fetch_with_relogin(self, path_redirect: str, path_page: str) -> str:
+        """Selects wlan_idx via redirect and fetches the target page, re-logging in once on session loss."""
+        try:
+            self._get_page(path_redirect)
+            return self._get_page(path_page)
+        except TendaAuthError:
+            self.login()
+            self._get_page(path_redirect)
+            return self._get_page(path_page)
+
+    def _verify_wifi_mutation(
+        self,
+        idx: int,
+        verify_basic: bool,
+        expected_ssid: Optional[str],
+        verify_wpa: bool,
+    ) -> None:
+        """Reads back wlbasic.asp and/or wlwpa.asp and verifies radio/SSID/encryption persisted."""
+        if verify_basic:
+            basic_html = self._fetch_with_relogin(
+                f"boaform/formWlanRedirect?redirect-url=/wlbasic.asp&wlan_idx={idx}",
+                "wlbasic.asp",
+            )
+            vstate = self._parse_wlbasic_state(basic_html, idx)
+            if vstate["disabled"]:
+                raise TendaError(f"Wi-Fi verification failed: radio wlan_idx={idx} is disabled.")
+            if vstate["band_raw"] not in _VALID_BANDS[idx]:
+                raise TendaError(
+                    f"Wi-Fi verification failed: invalid band '{vstate['band_raw']}' for wlan_idx={idx}."
+                )
+            if expected_ssid is not None and vstate["ssid"] != expected_ssid:
+                raise TendaError(
+                    f"Wi-Fi verification failed: expected SSID '{expected_ssid}', got '{vstate['ssid']}'."
+                )
+
+        if verify_wpa:
+            wpa_html = self._fetch_with_relogin(
+                f"boaform/formWlanRedirect?redirect-url=/wlwpa.asp&wlan_idx={idx}",
+                "wlwpa.asp",
+            )
+            enc_m = re.search(r"_encrypt\[0\]\s*=\s*(\d+)", wpa_html)
+            auth_m = re.search(r"_wpaAuth\[0\]\s*=\s*(\d+)", wpa_html)
+            if enc_m is None or auth_m is None:
+                raise TendaError("Wi-Fi WPA verification failed: could not parse security state.")
+            if int(enc_m.group(1)) not in (4, 6) or int(auth_m.group(1)) != 2:
+                raise TendaError(
+                    f"Wi-Fi WPA verification failed: encrypt={enc_m.group(1)}, wpaAuth={auth_m.group(1)}."
+                )
+
     def get_wifi_config(self, band: Union[str, int]) -> WifiConfig:
         """
         Retrieves current Wi-Fi configuration for the specified band.
@@ -349,26 +486,39 @@ class TendaClient:
         idx = self._resolve_band_index(band)
         band_name = "5GHz" if idx == 0 else "2.4GHz"
 
-        # Switch active wlan_idx in Boa session
         self._get_page(f"boaform/formWlanRedirect?redirect-url=/wlbasic.asp&wlan_idx={idx}")
         basic_html = self._get_page("wlbasic.asp")
 
-        ssid_match = re.search(r'name="ssid"[^>]*value="([^"]+)"', basic_html)
+        ssid_match = re.search(r'<input[^>]*name="?ssid"?[^>]*value="([^"]*)"', basic_html, re.I)
         if not ssid_match:
             var_name = "ssid_5g" if idx == 0 else "ssid_2g"
             ssid_match = re.search(rf'var\s+{var_name}\s*=\s*"([^"]+)"', basic_html)
 
         ssid = ssid_match.group(1) if ssid_match else f"SLT-Fiber-{'5G' if idx == 0 else '2.4G'}"
 
-        chan_match = re.search(r'name="chan"[^>]*value="(\d+)"', basic_html)
-        channel = int(chan_match.group(1)) if chan_match else (44 if idx == 0 else 11)
+        chan_match = re.search(r"(?:defaultChan|wlan_channel)\s*=\s*(\d+)", basic_html)
+        if chan_match:
+            chan_val = int(chan_match.group(1))
+            channel: Optional[int] = None if chan_val == 0 else chan_val
+        else:
+            channel = None
+
+        encryption = "WPA2-PSK (AES)"
+        try:
+            self._get_page(f"boaform/formWlanRedirect?redirect-url=/wlwpa.asp&wlan_idx={idx}")
+            wpa_html = self._get_page("wlwpa.asp")
+            enc_match = re.search(r"_encrypt\[0\]\s*=\s*(\d+)", wpa_html)
+            if enc_match:
+                encryption = _ENCRYPT_MAP.get(int(enc_match.group(1)), encryption)
+        except TendaConnectionError:
+            pass
 
         return WifiConfig(
             band=band_name,
             wlan_index=idx,
             ssid=ssid,
             hidden=False,
-            encryption="WPA2-PSK (AES)",
+            encryption=encryption,
             channel=channel,
         )
 
@@ -377,84 +527,211 @@ class TendaClient:
         band: Union[str, int],
         ssid: Optional[str] = None,
         password: Optional[str] = None,
+        use_browser_fallback: bool = True,
+        force_browser_fallback: bool = False,
     ) -> bool:
         """
         Safely updates SSID and/or WPA2 passphrase for the specified band.
         Passphrases are base64-encoded to match Boa webserver requirements.
+        Falls back to headless Chrome CDP automation if direct HTTP submission
+        fails verification (unless disabled).
         """
         idx = self._resolve_band_index(band)
 
-        if not ssid and not password:
+        if ssid is None and password is None:
             raise TendaValidationError("Must specify at least one of 'ssid' or 'password' to update.")
 
-        # Validate password characters
-        if password:
+        if ssid is not None:
+            ssid_bytes = len(ssid.encode("utf-8"))
+            if ssid_bytes < 1 or ssid_bytes > 32:
+                raise TendaValidationError("SSID must be between 1 and 32 UTF-8 bytes.")
+
+        if password is not None:
             if len(password) < 8 or len(password) > 63:
                 raise TendaValidationError("Wi-Fi password must be between 8 and 63 characters.")
             if re.search(r"[\\'\" ]", password):
                 raise TendaValidationError("Wi-Fi password cannot contain backslashes, quotes, or spaces.")
 
-        # Update SSID if requested
-        if ssid:
-            self._get_page(f"boaform/formWlanRedirect?redirect-url=/wlbasic.asp&wlan_idx={idx}")
-            params = [
-                ("wlan_idx", str(idx)),
-                ("band", "75" if idx == 0 else "11"),
-                ("mode", "0"),
-                ("ssid", ssid),
-                ("chan", "0"),
-                ("save", "Apply Changes"),
-                ("submit-url", "/wlbasic.asp"),
-            ]
-            query_str = ""
-            for k, v in params:
-                query_str += f"{rtk_urlencode(k)}={rtk_urlencode(v)}&"
+        def _run_browser_fallback() -> bool:
+            self.logout()
+            from .browser_fallback import apply_wifi_via_chrome
 
-            csum = calculate_rtk_checksum(query_str)
-            post_body = f"{query_str}postSecurityFlag={csum}"
-            headers = {
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": f"{self.base_url}/wlbasic.asp",
-            }
-            self.session.post(
-                f"{self.base_url}/boaform/formWlanSetup",
-                data=post_body,
-                headers=headers,
-                timeout=self.timeout,
+            apply_wifi_via_chrome(
+                host=self.host,
+                username=self.username,
+                password=self.password,
+                band_index=idx,
+                ssid=ssid,
+                wifi_password=password,
+                timeout=max(self.timeout, 25.0),
             )
+            self.login()
+            try:
+                self._verify_wifi_mutation(
+                    idx,
+                    verify_basic=(ssid is not None or idx == 1),
+                    expected_ssid=ssid,
+                    verify_wpa=(password is not None),
+                )
+            except TendaError as exc:
+                raise TendaError(
+                    f"Wi-Fi configuration verification failed after browser fallback: {exc}"
+                ) from exc
+            return True
 
-        # Update Password if requested
-        if password:
+        if force_browser_fallback:
+            return _run_browser_fallback()
+
+        self._get_page(f"boaform/formWlanRedirect?redirect-url=/wlbasic.asp&wlan_idx={idx}")
+        basic_html = self._get_page("wlbasic.asp")
+        state = self._parse_wlbasic_state(basic_html, idx)
+
+        needs_wlan_setup = (ssid is not None) or (
+            idx == 1 and (state["disabled"] or state["band_raw"] not in _VALID_BANDS[1])
+        )
+        target_ssid = ssid if ssid is not None else (state["ssid"] or "SLT-Fiber-2.4G")
+
+        wpa_html = ""
+        if password is not None:
             self._get_page(f"boaform/formWlanRedirect?redirect-url=/wlwpa.asp&wlan_idx={idx}")
-            encoded_psk = base64.b64encode(password.encode()).decode()
+            wpa_html = self._get_page("wlwpa.asp")
 
-            params = [
-                ("wlan_idx", str(idx)),
-                ("method", "6"),
-                ("wpaAuth", "2"),
-                ("pskFormat", "0"),
-                ("pskValue", encoded_psk),
-                ("save", "Apply Changes"),
-                ("submit-url", "/wlwpa.asp"),
-            ]
-            query_str = ""
-            for k, v in params:
-                query_str += f"{rtk_urlencode(k)}={rtk_urlencode(v)}&"
+        try:
+            if needs_wlan_setup:
+                basic_rate, oper_rate = _compute_wlan_rates(int(state["band"]))
+                wlan_params: List[Tuple[str, str]] = [
+                    ("band", state["band"]),
+                    ("mode", "0"),
+                    ("ssid", target_ssid),
+                    ("chanwid", state["chanwid"]),
+                ]
+                if state["chan"] != "0":
+                    wlan_params.append(("ctlband", state["ctlband"]))
+                wlan_params.extend([
+                    ("chan", state["chan"]),
+                    ("txpower", state["txpower"]),
+                    ("wl_limitstanum", "0"),
+                    ("wl_stanum", ""),
+                    ("regdomain_demo", "1"),
+                    ("submit-url", "/admin/wlbasic.asp"),
+                    ("save", "Apply Changes"),
+                    ("basicrates", str(basic_rate)),
+                    ("operrates", str(oper_rate)),
+                    ("wlan_idx", str(idx)),
+                    ("Band2G5GSupport", "1" if idx == 1 else "2"),
+                    ("wlanBand2G5GSelect", "0"),
+                    ("dfs_enable", "1"),
+                ])
+                post_body = _build_rtk_post_body(wlan_params)
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": f"{self.base_url}/wlbasic.asp",
+                }
+                try:
+                    self.session.post(
+                        f"{self.base_url}/boaform/formWlanSetup",
+                        data=post_body,
+                        headers=headers,
+                        timeout=max(self.timeout, 20.0),
+                    )
+                except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+                    pass
+                time.sleep(2.0)
 
-            csum = calculate_rtk_checksum(query_str)
-            post_body = f"{query_str}postSecurityFlag={csum}"
-            headers = {
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": f"{self.base_url}/wlwpa.asp",
-            }
-            self.session.post(
-                f"{self.base_url}/boaform/admin/formWlEncrypt",
-                data=post_body,
-                headers=headers,
-                timeout=self.timeout,
+            if password is not None:
+                if needs_wlan_setup:
+                    try:
+                        self._get_page(
+                            f"boaform/formWlanRedirect?redirect-url=/wlwpa.asp&wlan_idx={idx}"
+                        )
+                    except TendaAuthError:
+                        self.login()
+                        self._get_page(
+                            f"boaform/formWlanRedirect?redirect-url=/wlwpa.asp&wlan_idx={idx}"
+                        )
+
+                nmode_m = re.search(r"_wlan_isNmode\[0\]\s*=\s*(\d+)", wpa_html)
+                is_nmode = nmode_m.group(1) if nmode_m else "0"
+                gk_m = re.search(r"_wpaGroupRekeyTime\[0\]\s*=\s*'(\d+)'", wpa_html)
+                gk_rekey = gk_m.group(1) if gk_m else "86400"
+                ucipher_m = re.search(r"_uCipher\[0\]\s*=\s*(\d+)", wpa_html)
+                u_cipher = int(ucipher_m.group(1)) if ucipher_m else 3
+                w2cipher_m = re.search(r"_wpa2uCipher\[0\]\s*=\s*(\d+)", wpa_html)
+                wpa2_cipher = int(w2cipher_m.group(1)) if w2cipher_m else 3
+                bflag_m = re.search(r"var\s+band\s*=\s*(\d+)", wpa_html)
+                band_flag = int(bflag_m.group(1)) if bflag_m else (12 if idx == 1 else 76)
+
+                encoded_psk = base64.b64encode(password.encode("utf-8")).decode("ascii")
+                wpa_params: List[Tuple[str, str]] = [
+                    ("wlanDisabled", "OFF"),
+                    ("isNmode", is_nmode),
+                    ("wpaSSID", "0"),
+                    ("security_method", "6"),
+                    ("auth_type", "both"),
+                    ("wepEnabled", "ON"),
+                    ("length0", "1"),
+                    ("format0", "1"),
+                    ("key0", ""),
+                    ("wpaAuth", "psk"),
+                    ("dotIEEE80211W", "0"),
+                    ("sha256", "0"),
+                ]
+                if band_flag not in (8, 64, 72) and u_cipher in (1, 3):
+                    wpa_params.append(("ciphersuite_t", "1"))
+                if u_cipher in (2, 3) or band_flag in (8, 64, 72):
+                    wpa_params.append(("ciphersuite_a", "1"))
+                if band_flag not in (8, 64, 72) and wpa2_cipher in (1, 3):
+                    wpa_params.append(("wpa2ciphersuite_t", "1"))
+                if wpa2_cipher in (2, 3) or band_flag in (8, 64, 72):
+                    wpa_params.append(("wpa2ciphersuite_a", "1"))
+                wpa_params.extend([
+                    ("gk_rekey", gk_rekey),
+                    ("pskFormat", "0"),
+                    ("pskValue", encoded_psk),
+                    ("wapiPskFormat", "0"),
+                    ("wapiPskValue", ""),
+                    ("radiusIP", "0.0.0.0"),
+                    ("radiusPort", "1812"),
+                    ("radiusPass", "12345"),
+                    ("radius2IP", "0.0.0.0"),
+                    ("radius2Port", "1812"),
+                    ("radius2Pass", "12345"),
+                    ("wapiASIP", "0.0.0.0"),
+                    ("wlan_idx", str(idx)),
+                    ("submit-url", "/admin/wlwpa.asp"),
+                    ("save", "Apply Changes"),
+                ])
+                post_body = _build_rtk_post_body(wpa_params)
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": f"{self.base_url}/wlwpa.asp",
+                }
+                try:
+                    self.session.post(
+                        f"{self.base_url}/boaform/admin/formWlEncrypt",
+                        data=post_body,
+                        headers=headers,
+                        timeout=max(self.timeout, 20.0),
+                    )
+                except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+                    pass
+                time.sleep(2.0)
+
+            self._verify_wifi_mutation(
+                idx,
+                verify_basic=needs_wlan_setup,
+                expected_ssid=target_ssid if needs_wlan_setup else None,
+                verify_wpa=(password is not None),
             )
-
-        return True
+            return True
+        except (TendaValidationError, TendaAuthError):
+            raise
+        except (TendaError, requests.RequestException) as exc:
+            if not use_browser_fallback:
+                if isinstance(exc, TendaError):
+                    raise exc
+                raise TendaConnectionError(f"Wi-Fi update failed: {exc}") from exc
+            return _run_browser_fallback()
 
     def backup_config(self, destination_path: Union[str, Path]) -> Path:
         """
