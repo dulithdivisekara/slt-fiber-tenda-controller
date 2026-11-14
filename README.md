@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="assets/tenda-logo.png" width="200" alt="Tenda Logo" />
+  <img src="assets/slt-mobitel-logo.png" width="185" alt="SLT-MOBITEL Logo" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/tenda-logo.png" width="175" alt="Tenda Logo" />
 </p>
 
 <h1 align="center">SLT Fiber Tenda HG7 Router Controller</h1>
@@ -80,7 +82,8 @@ sequenceDiagram
 .
 ├── assets/
 │   ├── screenshots/               # Sanitized terminal outputs (help, status, pon)
-│   └── tenda-logo.png             # Optimized official transparent logo
+│   ├── slt-mobitel-logo.png       # Optimized official transparent SLT-MOBITEL logo
+│   └── tenda-logo.png             # Optimized official transparent Tenda logo
 ├── docs/
 │   ├── api-reference.md           # Python client methods and schemas
 │   ├── endpoints-map.md           # Complete 44-page router endpoint mapping
