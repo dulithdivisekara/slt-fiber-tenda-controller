@@ -1,5 +1,5 @@
 """
-CLI runner (tenda-ctl / tenda-cli) for Tenda HG7 router.
+CLI runner (tenda-ctl) for Tenda HG7 router.
 
 Author: Dulith Divisekara
 """
